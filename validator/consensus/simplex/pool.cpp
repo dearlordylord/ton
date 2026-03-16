@@ -644,7 +644,8 @@ class PoolImpl : public td::actor::SpawnsWith<Bus>, public td::actor::ConnectsTo
     }
     if (next_slot_after_parent < first_nonfinalized_slot_) {
       return resolve_with(ConflictingCandidateAndCertificate::create(
-          /* candidate, last_finalization_cert */));
+          request_.candidate_for_proof->serialize(),
+          last_final_cert_.has_value() ? (*last_final_cert_)->serialize() : td::BufferSlice()));
     }
 
     auto slot = state_->slot_at(id.slot);
@@ -653,7 +654,10 @@ class PoolImpl : public td::actor::SpawnsWith<Bus>, public td::actor::ConnectsTo
       if (notarized_block == id) {
         return resolve_with(td::Status::Error("Notarization cert for the candidate already exists"));
       } else {
-        return resolve_with(ConflictingCandidateAndCertificate::create(/* candidate, notarization_cert(slot) */));
+        return resolve_with(ConflictingCandidateAndCertificate::create(
+            request_.candidate_for_proof->serialize(),
+            slot->state->certs.notar_.cert.has_value() ? (*slot->state->certs.notar_.cert)->serialize()
+                                                       : td::BufferSlice()));
       }
     }
 
@@ -663,8 +667,14 @@ class PoolImpl : public td::actor::SpawnsWith<Bus>, public td::actor::ConnectsTo
         // `first_nonfinalized_slot_ == 0` <=> `!last_finalized_block_.has_value()`, so
         CHECK(first_nonfinalized_slot_ != 0);
 
-        return resolve_with(ConflictingCandidateAndCertificate::create(
-            /* candidate, notarization_cert(first_nonfinalized_slot_ - 1) */));
+        {
+          auto prev_slot = state_->slot_at(first_nonfinalized_slot_ - 1);
+          return resolve_with(ConflictingCandidateAndCertificate::create(
+              request_.candidate_for_proof->serialize(),
+              prev_slot->state->certs.notar_.cert.has_value()
+                  ? (*prev_slot->state->certs.notar_.cert)->serialize()
+                  : td::BufferSlice()));
+        }
       }
     } else {
       // Here, `next_slot_after_parent > first_nonfinalized_slot_ >= 0`, so
@@ -674,7 +684,10 @@ class PoolImpl : public td::actor::SpawnsWith<Bus>, public td::actor::ConnectsTo
       if (parent_slot->state->is_notarized()) {
         if (parent_slot->state->notarized_block() != parent) {
           return resolve_with(ConflictingCandidateAndCertificate::create(
-              /* candidate, notarization_cert(slot) */));
+              request_.candidate_for_proof->serialize(),
+              parent_slot->state->certs.notar_.cert.has_value()
+                  ? (*parent_slot->state->certs.notar_.cert)->serialize()
+                  : td::BufferSlice()));
         }
       } else {
         // Parent is not yet notarized, will try our luck later.
