@@ -10,6 +10,7 @@
 #include "td/actor/coro_utils.h"
 
 #include "bus.h"
+#include "misbehavior.h"
 
 namespace ton::validator::consensus::simplex {
 
@@ -171,13 +172,17 @@ class ConsensusImpl : public td::actor::SpawnsWith<Bus>, public td::actor::Conne
     const auto& candidate = event->candidate;
 
     if (candidate->parent_id.has_value() && candidate->parent_id->slot >= candidate->id.slot) {
-      // FIXME: report misbehavior
+      owning_bus().publish<MisbehaviorReport>(candidate->leader,
+                                               InvalidCandidate::create(candidate->serialize()));
       return;
     }
 
     if (slot->state->pending_block.has_value()) {
       if (slot->state->pending_block.value()->id != candidate->id) {
-        // FIXME: Report misbehavior
+        owning_bus().publish<MisbehaviorReport>(
+            candidate->leader,
+            ConflictingCandidates::create(slot->state->pending_block.value()->serialize(),
+                                          candidate->serialize()));
       }
       return;
     }
@@ -224,7 +229,8 @@ class ConsensusImpl : public td::actor::SpawnsWith<Bus>, public td::actor::Conne
     if (validation_result.has<CandidateReject>()) {
       LOG(WARNING) << "Candidate " << candidate->id
                    << " is rejected: " << validation_result.get<CandidateReject>().reason;
-      // FIXME: Report misbehavior
+      owning_bus().publish<MisbehaviorReport>(candidate->leader,
+                                               InvalidCandidate::create(candidate->serialize()));
       co_return {};
     }
     co_await std::move(store_candidate);
