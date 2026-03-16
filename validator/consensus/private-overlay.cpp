@@ -13,6 +13,7 @@
 #include "td/utils/Status.h"
 #include "td/utils/logging.h"
 
+#include "broadcast-validation.h"
 #include "bus.h"
 #include "stats.h"
 
@@ -140,14 +141,9 @@ class PrivateOverlayImpl : public td::actor::SpawnsWith<Bus>, public td::actor::
 
       void check_broadcast(PublicKeyHash, overlay::OverlayIdShort, td::BufferSlice data,
                            td::Promise<td::Unit> promise) override {
-        if (data.size() < 4) {
-          promise.set_error(td::Status::Error("Broadcast data too small"));
-          return;
-        }
-        td::TlParser parser(data.as_slice());
-        auto magic = parser.fetch_int();
-        if (magic != tl::block::ID && magic != tl::empty::ID) {
-          promise.set_error(td::Status::Error("Unknown broadcast TL type"));
+        auto status = validate_broadcast_data(data.as_slice());
+        if (status.is_error()) {
+          promise.set_error(std::move(status));
           return;
         }
         promise.set_value(td::Unit());
