@@ -13,6 +13,7 @@
 #include "td/utils/Status.h"
 #include "td/utils/logging.h"
 
+#include "broadcast-validation.h"
 #include "bus.h"
 #include "stats.h"
 
@@ -138,8 +139,13 @@ class PrivateOverlayImpl : public td::actor::SpawnsWith<Bus>, public td::actor::
         td::actor::send_closure(owner_, &PrivateOverlayImpl::on_overlay_broadcast, src, std::move(data));
       }
 
-      void check_broadcast(PublicKeyHash, overlay::OverlayIdShort, td::BufferSlice,
+      void check_broadcast(PublicKeyHash, overlay::OverlayIdShort, td::BufferSlice data,
                            td::Promise<td::Unit> promise) override {
+        auto status = validate_broadcast_data(data.as_slice());
+        if (status.is_error()) {
+          promise.set_error(std::move(status));
+          return;
+        }
         promise.set_value(td::Unit());
       }
 
@@ -151,8 +157,12 @@ class PrivateOverlayImpl : public td::actor::SpawnsWith<Bus>, public td::actor::
   }
 
   void on_overlay_message(adnl::AdnlNodeIdShort src_adnl_id, td::BufferSlice data) {
-    auto peer = adnl_id_to_peer_.at(src_adnl_id);
-    owning_bus().publish<IncomingProtocolMessage>(peer.idx, std::move(data));
+    auto it = adnl_id_to_peer_.find(src_adnl_id);
+    if (it == adnl_id_to_peer_.end()) {
+      LOG(WARNING) << "Dropping message from unknown ADNL ID " << src_adnl_id;
+      return;
+    }
+    owning_bus().publish<IncomingProtocolMessage>(it->second.idx, std::move(data));
   }
 
   void on_overlay_broadcast(PublicKeyHash src, td::BufferSlice data) {
@@ -161,7 +171,12 @@ class PrivateOverlayImpl : public td::actor::SpawnsWith<Bus>, public td::actor::
     }
 
     auto& bus = *owning_bus();
-    auto peer = short_id_to_peer_.at(src);
+    auto it = short_id_to_peer_.find(src);
+    if (it == short_id_to_peer_.end()) {
+      LOG(WARNING) << "Dropping broadcast from unknown source " << src;
+      return;
+    }
+    auto peer = it->second;
     auto maybe_candidate = Candidate::deserialize(std::move(data), bus, peer.idx);
 
     if (!maybe_candidate.is_ok()) {
@@ -175,7 +190,13 @@ class PrivateOverlayImpl : public td::actor::SpawnsWith<Bus>, public td::actor::
   }
 
   void on_query(adnl::AdnlNodeIdShort src, td::BufferSlice data, td::Promise<td::BufferSlice> promise) {
-    auto peer = adnl_id_to_peer_.at(src);
+    auto it = adnl_id_to_peer_.find(src);
+    if (it == adnl_id_to_peer_.end()) {
+      LOG(WARNING) << "Dropping query from unknown ADNL ID " << src;
+      promise.set_value(create_serialize_tl_object<tl::requestError>());
+      return;
+    }
+    auto peer = it->second;
     auto request = std::make_shared<IncomingOverlayRequest>(peer.idx, std::move(data));
 
     auto task = [](BusHandle bus, auto message, auto promise) -> td::actor::Task<> {
